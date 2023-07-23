@@ -1,47 +1,42 @@
-# main-count-occ-spatial.R: fits a multi-season spatial occupancy model. 
-# More information on the model at
-# https://www.jeffdoser.com/files/spoccupancy-web/articles/spacetimemodelshtml
+# main-spatial-occ.R: script to fit a multi-season spatial occupancy model 
+#                     to assess Clark's Nutcracker use of whitebark pine
+#                     forests.
+# Authors: Vladimir Kovalenko and Jeffrey W. Doser
 rm(list = ls())
 # Load libraries ----------------------------------------------------------
 library(tidyverse)
 library(viridis)
 library(spOccupancy)
 library(coda)
-# A useful package for summarizing MCMC results
 library(MCMCvis)
-#devtools::install_github("iamamutt/ggdistribute")
+library(sf)
+# devtools::install_github("iamamutt/ggdistribute")
 library(ggdistribute)
 
-setwd("C:/Users/vladk/Documents/R/Occupancy/Bayesian/DoserAbundance")
+# Set working directory as needed
+# setwd()
 
 # Read in the count and acoustic data -------------------------------------
-# Note that a "site" is the combination of a sampling location and year
 # c: point count data with sites as rows and repeat visits as columns
-c <- as.matrix(read.csv("c_modC_allyrs.csv")[, c(2:4)])
+c <- as.matrix(read.csv("point-count-data.csv")[, c(2:4)])
 
 # Occupancy covariates ----------------------------------------------------
 # Cones
-cones <- c(read.csv("x_modC_conemod.csv")[, c(2)])
+cones <- c(read.csv("covariate-point-count-data.csv")[, c(2)])
 
 # Live basal area
-livebasalarea <- c(read.csv("x_modC_conemod.csv")[, c(3)])
-totalbasalarea <- c(read.csv("x_modC_conemod.csv")[, c(4)])
-meanlivedbh <- c(read.csv("x_modC_conemod.csv")[, c(5)])
+livebasalarea <- c(read.csv("covariate-point-count-data.csv")[, c(3)])
+totalbasalarea <- c(read.csv("covariate-point-count-data.csv")[, c(4)])
+meanlivedbh <- c(read.csv("covariate-point-count-data.csv")[, c(5)])
 
-propinfected <- c(read.csv("x_modC_conemod.csv")[, c(6)])
+propinfected <- c(read.csv("covariate-point-count-data.csv")[, c(6)])
 
 # Site group
-# ditto with this. Converted it to a vector
-# site.group.ind <- as.matrix(read.csv("c_modC.csv")[,-c(1:4,6:8)])
-# NOTE: double check that these are correct. Just figured its worth a check
-#       since they are nearly all in order, except the 2nd sitegroup.
-site.group.ind <- c(read.csv("c_modC_allyrs.csv")[,5])
-site.group.ind
+site.group.ind <- c(read.csv("point-count-data.csv")[,5])
 n.sitegroups <- length(unique(site.group.ind))
 
-# X.lambda: design matrix consisting of an intercept in column 1 and an 
-#           indicator variable for year in column 2.
-X.lambda <- as.matrix(read.csv("X.lambda_modC.csv")[,-1])
+# Extract the year associated with each data point.
+X.lambda <- as.matrix(read.csv("year-point-count.csv")[,-1])
 X.lambda[, 2] <- ifelse(X.lambda[, 2] == 2020, 0,
                         ifelse(X.lambda[, 2] == 2021,1,2))
 head(X.lambda)
@@ -52,7 +47,7 @@ R <- nrow(c)
 # n.count: number of point count visits for each of the J possible sites.
 n.count <- apply(c, 1, function(a) sum(!is.na(a)))
 # Date --------------------------------
-date <- as.matrix(read.csv("c_modC_allyrs.csv")[,c(6,7,8)])
+date <- as.matrix(read.csv("point-count-data.csv")[,c(6,7,8)])
 # Convert date to Julian date
 date <- as.POSIXct(date, format = "%m/%d/%Y")
 date <- as.numeric(format(date, "%j"))
@@ -61,10 +56,9 @@ str(date) # This is the Julian day of the year, or the specific day of the year 
 date <- matrix(date, R, max(n.count))
 
 # Wind --------------------------------
-wind <- read.csv("c_modC_allyrs.csv")[, c(9,10,11)]
+wind <- read.csv("point-count-data.csv")[, c(9,10,11)]
 wind <- unlist(c(wind))
 wind <- matrix(c(wind), R, max(n.count))
-# wind <- as.matrix(scale(read.csv("c_modC.csv")[,-c(1:8)]))
 
 # Format data for spOccupancy ---------------------------------------------
 # Get detection-nondetection data from count data
@@ -76,10 +70,7 @@ y <- array(NA, dim = c(n.sites, n.years, ncol(y.mat)))
 for (i in 1:ncol(y.mat)) {
   y[, , i] <- matrix(y.mat[, i], n.sites, n.years, byrow = TRUE)
 }
-# Impute mean values into missing values for cones
-#cones[which(is.na(cones))] <- mean(cones, na.rm = TRUE)
-# Occupancy covariates. Notice these are now matrices with row sites and 
-# columns years.
+# Occupancy covariates
 occ.covs <- list(year = matrix(X.lambda[, 2], n.sites, n.years, byrow = TRUE), 
 		 cones = matrix(cones, n.sites, n.years, byrow = TRUE),
 		 live.basal.area = matrix(livebasalarea, n.sites, n.years, byrow = TRUE),
@@ -87,6 +78,7 @@ occ.covs <- list(year = matrix(X.lambda[, 2], n.sites, n.years, byrow = TRUE),
 		 mean.live.dbh = matrix(meanlivedbh, n.sites, n.years, byrow = TRUE),
 		 prop.infected = matrix(propinfected, n.sites, n.years, byrow = TRUE))
 
+# Detection covariates
 date.array <- array(NA, dim = dim(y))
 wind.array <- array(NA, dim = dim(y))
 for (i in 1:ncol(y.mat)) {
@@ -99,13 +91,10 @@ det.covs <- list(date = date.array,
                  year = matrix(X.lambda[, 2], n.sites, n.years, byrow = TRUE))
 
 # Load in plot coordinates
-coords <- read.csv("plot_coords_corrected.csv")
+coords <- read.csv("coordinates.csv")
 site.names <- coords$site
 coords <- coords[, c('Lon', 'Lat')]
 # Convert to projected coordinate system
-# TODO: there might be a better projected coordinate system for your location. 
-# This is Albers Equal Area. 
-library(sf)
 coords <- st_as_sf(coords, 
 		   coords = c('Lon', 'Lat'), 
 		   crs = "+proj=longlat +datum=WGS84")
@@ -117,7 +106,7 @@ data.list <- list(y = y, occ.covs = occ.covs, det.covs = det.covs, coords = coor
 # Set up for occupancy model ----------------------------------------------
 n.samples <- 60000
 batch.length <- 25
-n.batch <- 60000 / 25
+n.batch <- n.samples / batch.length 
 n.burn <- 30000
 n.thin <- 15
 n.chains <- 3
@@ -131,6 +120,7 @@ dist.matrix <- dist(coords.aea)
 diameter.hr <- sqrt(32 / pi) * 2
 priors <- list(phi.unif = c(3 / max(dist.matrix), 3 / diameter.hr))
 
+# Run the spatial multi-season occupancy model ----------------------------
 out <- stPGOcc(occ.formula = ~ scale(year) + scale(cones) + scale(live.basal.area) + 
                              scale(mean.live.dbh) + scale(prop.infected), 
                det.formula = ~ scale(date) + I(scale(date)^2) + scale(wind) + 
@@ -158,27 +148,14 @@ apply(out$beta.samples, 2, function(a) mean(a > 0))
 # Detection
 apply(out$alpha.samples, 2, function(a) mean(a > 0))
 
-# Negative #
-
-#Occurrence
+# Probability of a negative effect
+# Occurrence
 apply(out$beta.samples, 2, function(a) mean(a < 0))
 
 # Detection
 apply(out$alpha.samples, 2, function(a) mean(a < 0))
 
-## Peak detection probability plot
-
-dates <- as.vector(det.covs$date)
-det.means <- apply(out$alpha.samples, c(2, 3), mean)
-# These are the lower bound of a 95% credible interval.
-det.low <- apply(out$psi.samples, c(2, 3), quantile, 0.025)
-# These are the upper bound of the 95% credible interval. 
-det.high <- apply(out$psi.samples, c(2, 3), quantile, 0.975)
-# Get width of 95% credible interval 
-det.ci.width <- occ.high - occ.low
-
-ggplot(NULL,aes(x=dates, y=)) + geom_point()
-
+# Generate Figure 3 -------------------------------------------------------
 # Plot the posterior densities for the covariate effects
 beta.names <- colnames(out$beta.samples)[-1]
 plot.df <- data.frame(val = c(out$beta.samples[, -1]), 
@@ -196,7 +173,7 @@ ggplot(data = plot.df, aes(x = val, fill = parameter), color = 'black') +
   guides(fill = 'none') +
   scale_color_viridis_d()
 
-### Detection covariates
+# Detection covariates
 # Plot the posterior densities for the covariate effects
 alpha.names <- colnames(out$alpha.samples)[-1]
 plot.df <- data.frame(val = c(out$alpha.samples[, -1]), 
@@ -214,7 +191,7 @@ ggplot(data = plot.df, aes(x = val, fill = parameter), color = 'black') +
   guides(fill = 'none') +
   scale_color_viridis_d()
 
-# Generate a plot of detection as a function of survey date ---------------
+# Generate Figure S3 (plot of detection prob vs. date) --------------------
 n.pred <- 500
 det.pred.vals <- seq(from = min(c(data.list$det.covs$date), na.rm = TRUE), 
                      to = max(c(data.list$det.covs$date), na.rm = TRUE), length.out = n.pred)
